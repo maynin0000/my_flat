@@ -1,0 +1,113 @@
+openapi: 3.0.3
+info:
+  title: FitTiming API
+  version: 0.1.0
+
+paths:
+  /v1/snapshots:
+    post:
+      summary: Upload a product snapshot
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SnapshotPayload'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SnapshotPayload:
+      type: object
+      required:
+        - platform
+        - source_url
+        - product_key
+        - captured_at
+        - extractor_version
+        - confidence
+        - price
+        - stock
+      properties:
+        platform:
+          type: string
+          example: musinsa
+        source_url:
+          type: string
+        product_key:
+          type: string
+          example: musinsa:goods:1234567
+        captured_at:
+          type: string
+          format: date-time
+        extractor_version:
+          type: string
+          example: musinsa_v0_dom
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+        price:
+          type: object
+          required:
+            - sale_price
+            - currency
+          properties:
+            sale_price:
+              type: integer
+            original_price:
+              type: integer
+              nullable: true
+            discount_rate:
+              type: integer
+              nullable: true
+            currency:
+              type: string
+              example: KRW
+
+        stock:
+          type: object
+          required:
+            - product_status
+            - sizes
+          properties:
+            product_status:
+              type: string
+              enum: [on_sale, sold_out, ended, unknown]
+            sizes:
+              type: object
+              additionalProperties:
+                type: string
+                enum: [in_stock, sold_out, unknown]
+
+        debug:
+          type: object
+          nullable: true
+
+    SnapshotResponse:
+      type: object
+      properties:
+        snapshot_id:
+          type: string
+        product_id:
+          type: string
+        stored:
+          type: boolean
+        server_time:
+          type: string
+          format: date-time
