@@ -1,6 +1,14 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import React, { useMemo, useState } from "react";
-import { Alert, Button, SafeAreaView, ScrollView, Text, View } from "react-native";
+import {
+  Alert,
+  Button,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
 import { WebView } from "react-native-webview";
 import type { RootStackParamList } from "../../App";
 
@@ -8,6 +16,7 @@ type Props = NativeStackScreenProps<RootStackParamList, "ProductWebView">;
 
 type ExtractResult = {
   type: "EXTRACT_RESULT";
+  name: string | null;
   sale_price: number | null;
   product_status: "on_sale" | "sold_out" | "ended" | "unknown";
   sizes: Record<string, "in_stock" | "sold_out" | "unknown">;
@@ -17,12 +26,16 @@ type ExtractResult = {
 
 export default function ProductWebViewScreen({ route }: Props) {
   const { url } = route.params;
-
   const [extract, setExtract] = useState<ExtractResult | null>(null);
 
   const injected = useMemo(() => {
     return `
       (function() {
+        function cleanText(txt) {
+          if (!txt) return "";
+          return String(txt).replace(/\\s+/g, " ").trim();
+        }
+
         function toIntPrice(txt) {
           if (!txt) return null;
           const m = (txt + '').match(/[0-9][0-9,]*/g);
@@ -32,13 +45,47 @@ export default function ProductWebViewScreen({ route }: Props) {
           return n;
         }
 
+        function getMetaContent(selector) {
+          const el = document.querySelector(selector);
+          if (!el) return null;
+          const content = el.getAttribute("content");
+          return cleanText(content);
+        }
+
+        function guessProductName() {
+          const metaOg = getMetaContent('meta[property="og:title"]');
+          if (metaOg && metaOg.length >= 3) return metaOg;
+
+          const metaTwitter = getMetaContent('meta[name="twitter:title"]');
+          if (metaTwitter && metaTwitter.length >= 3) return metaTwitter;
+
+          const h1 = document.querySelector("h1");
+          const h1Text = cleanText(h1 ? h1.textContent : "");
+          if (h1Text && h1Text.length >= 3) return h1Text;
+
+          const titleText = cleanText(document.title || "");
+          if (titleText && titleText.length >= 3) return titleText;
+
+          const elements = Array.from(
+            document.querySelectorAll("h1, h2, strong, div, span")
+          ).slice(0, 500);
+
+          const candidates = elements
+            .map(el => cleanText(el.textContent || ""))
+            .filter(t => t.length >= 5 && t.length <= 80);
+
+          if (candidates.length) return candidates[0];
+
+          return null;
+        }
+
         function findPriceTexts() {
           const texts = [];
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
           let node;
           while ((node = walker.nextNode())) {
-            const t = (node.nodeValue || '').trim();
-            if (t.includes('원') && /[0-9]/.test(t)) texts.push(t);
+            const t = cleanText(node.nodeValue || "");
+            if (t.includes("원") && /[0-9]/.test(t)) texts.push(t);
             if (texts.length > 80) break;
           }
           return texts;
@@ -52,17 +99,19 @@ export default function ProductWebViewScreen({ route }: Props) {
 
         function extractSizes() {
           const result = {};
-          const elements = Array.from(document.querySelectorAll("button, li, option, div, span")).slice(0, 1200);
+          const elements = Array.from(
+            document.querySelectorAll("button, li, option, div, span")
+          ).slice(0, 1200);
 
           const candidates = elements.filter(el => {
-            const t = (el.textContent || '').trim();
+            const t = cleanText(el.textContent || "");
             if (!t) return false;
             if (t.length > 12) return false;
-            return /^(XS|S|M|L|XL|XXL|FREE|OS|ONE|\\d{2,3})$/.test(t) || /FREE/i.test(t);
+            return /^(XS|S|M|L|XL|XXL|FREE|OS|ONE|\\d{2,3})$/i.test(t);
           }).slice(0, 200);
 
           candidates.forEach(el => {
-            const label = (el.textContent || '').trim();
+            const label = cleanText(el.textContent || "");
             if (!label) return;
 
             let score = 0;
@@ -85,38 +134,55 @@ export default function ProductWebViewScreen({ route }: Props) {
           return result;
         }
 
+        function guessProductStatus(price, sizes) {
+          const bodyText = cleanText(
+            document.body ? document.body.innerText : ""
+          ).toLowerCase();
+
+          if (/판매종료|종료됨|구매불가/.test(bodyText)) return "ended";
+          if (/품절/.test(bodyText)) {
+            const keys = Object.keys(sizes || {});
+            if (keys.length > 0) {
+              const allSoldOut = keys.every(k => sizes[k] === "sold_out");
+              if (allSoldOut) return "sold_out";
+            }
+          }
+          if (price) return "on_sale";
+          return "unknown";
+        }
+
         function extract() {
+          const name = guessProductName();
           const priceTexts = findPriceTexts();
           const sale = guessSalePrice(priceTexts);
           const sizes = extractSizes();
+          const productStatus = guessProductStatus(sale, sizes);
 
-          let productStatus = "unknown";
-          if (sale) productStatus = "on_sale";
-
-          const sizeKeys = Object.keys(sizes);
-          const unknownCount = sizeKeys.filter(k => sizes[k] === "unknown").length;
-          const sizeScore = sizeKeys.length ? (1 - (unknownCount / sizeKeys.length)) : 0;
-
+          const sizeKeys = Object.keys(sizes || {});
           let confidence = 0;
-          if (sale) confidence += 0.4;
-          confidence += Math.min(0.4, sizeScore * 0.4);
-          if (productStatus !== "unknown") confidence += 0.1;
-          if (priceTexts.length) confidence += 0.1;
+
+          if (name) confidence += 0.3;
+          if (sale) confidence += 0.3;
+          if (productStatus !== "unknown") confidence += 0.2;
+          if (sizeKeys.length > 0) confidence += 0.2;
+
           confidence = Math.max(0, Math.min(1, confidence));
 
           const payload = {
             type: "EXTRACT_RESULT",
+            name: name,
             sale_price: sale,
             product_status: productStatus,
             sizes: sizes,
             confidence: confidence,
             price_texts_sample: priceTexts.slice(0, 10),
           };
+
           window.ReactNativeWebView.postMessage(JSON.stringify(payload));
         }
 
-        // 즉시 1회 + 1초 간격 4회 재시도
         extract();
+
         let tries = 0;
         const timer = setInterval(() => {
           tries += 1;
@@ -131,8 +197,65 @@ export default function ProductWebViewScreen({ route }: Props) {
   const summary = useMemo(() => {
     if (!extract) return "추출 대기중...";
     const sizeCount = Object.keys(extract.sizes || {}).length;
-    return `sale_price=${extract.sale_price ?? "null"} / sizes=${sizeCount} / conf=${extract.confidence.toFixed(2)}`;
+    return [
+      extract.name ? `name=${extract.name}` : "name=null",
+      `sale_price=${extract.sale_price ?? "null"}`,
+      `status=${extract.product_status}`,
+      `sizes=${sizeCount}`,
+      `conf=${extract.confidence.toFixed(2)}`,
+    ].join(" / ");
   }, [extract]);
+
+  if (Platform.OS === "web") {
+    return (
+      <SafeAreaView style={{ flex: 1 }}>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            padding: 24,
+            gap: 12,
+          }}
+        >
+          <Text style={{ fontSize: 20, fontWeight: "600" }}>
+            웹에서는 상품 추출 테스트를 지원하지 않음
+          </Text>
+
+          <Text style={{ fontSize: 14, color: "#666", textAlign: "center" }}>
+            현재 이 화면은 react-native-webview 기반이라서
+            {"\n"}
+            Expo Go 또는 모바일 에뮬레이터에서 확인해야 해.
+          </Text>
+
+          <View
+            style={{
+              width: "100%",
+              padding: 16,
+              borderWidth: 1,
+              borderColor: "#ddd",
+              borderRadius: 12,
+              backgroundColor: "#fafafa",
+              marginTop: 8,
+            }}
+          >
+            <Text style={{ fontSize: 13, color: "#999", marginBottom: 8 }}>
+              등록한 URL
+            </Text>
+            <Text selectable style={{ fontSize: 14 }}>
+              {url}
+            </Text>
+          </View>
+
+          <Text style={{ fontSize: 13, color: "#999", textAlign: "center" }}>
+            웹에서는 UI 흐름만 확인하고,
+            {"\n"}
+            실제 추출 기능은 나중에 모바일에서 테스트하면 돼.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={{ flex: 1 }}>
@@ -140,7 +263,9 @@ export default function ProductWebViewScreen({ route }: Props) {
         <Text numberOfLines={1} style={{ fontSize: 12, color: "#666" }}>
           {url}
         </Text>
+
         <Text style={{ fontSize: 12 }}>{summary}</Text>
+
         <Button
           title="추출 결과 보기"
           onPress={() => {
@@ -159,12 +284,13 @@ export default function ProductWebViewScreen({ route }: Props) {
         onMessage={(e) => {
           try {
             const msg = JSON.parse(e.nativeEvent.data) as ExtractResult;
-            if (msg.type === "EXTRACT_RESULT") setExtract(msg);
+            if (msg.type === "EXTRACT_RESULT") {
+              setExtract(msg);
+            }
           } catch {}
         }}
       />
 
-      {/* 작은 디버그 패널 */}
       <ScrollView style={{ maxHeight: 160, borderTopWidth: 1, borderColor: "#eee" }}>
         <Text style={{ padding: 12, fontSize: 12, color: "#333" }}>
           {extract ? JSON.stringify(extract, null, 2) : "추출 대기중..."}
