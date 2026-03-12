@@ -11,10 +11,11 @@ import {
   View,
 } from "react-native";
 import type { RootStackParamList } from "../../App";
+import { mockCompareMap } from "../mock/priceCompare";
 import { mockTrackedListings } from "../mock/trackedListings";
+import type { ComparePriceItem } from "../types/priceCompare";
 import type { TrackedListing } from "../types/trackedListing";
 import {
-  filterTrackedListings,
   formatPrice,
   getChangeDisplay,
   getChangeLabel,
@@ -23,57 +24,203 @@ import {
 } from "../utils/trackedListing";
 
 type Props = NativeStackScreenProps<RootStackParamList, "TrackedProducts">;
-type FilterType = "all" | "price_drop" | "restocked" | "sold_out";
+
+type FilterType =
+  | "all"
+  | "price_drop"
+  | "restocked"
+  | "sold_out"
+  | "favorite";
+
+const COLORS = {
+  bg: "#F5F6F8",
+  surface: "#FFFFFF",
+  border: "#E7EBF0",
+  text: "#111827",
+  subText: "#6B7280",
+  muted: "#9CA3AF",
+  black: "#111111",
+  blue: "#2563EB",
+  blueSoft: "#EEF4FF",
+  green: "#16A34A",
+  greenSoft: "#ECFDF3",
+  red: "#E11D48",
+  redSoft: "#FFF1F2",
+  graySoft: "#F3F4F6",
+  purpleSoft: "#EEF2FF",
+  purple: "#4338CA",
+  yellowSoft: "#FFF7DB",
+  yellowBorder: "#F3D36B",
+};
+
+function getColumnCount(width: number) {
+  if (Platform.OS !== "web") {
+    if (width < 520) return 1;
+    return 2;
+  }
+
+  if (width >= 1480) return 4;
+  if (width >= 1120) return 3;
+  if (width >= 760) return 2;
+  return 1;
+}
+
+function formatCheckedAt(dateString: string) {
+  const date = new Date(dateString);
+
+  if (Number.isNaN(date.getTime())) return "확인 기록 없음";
+
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+
+  return `${month}.${day} ${hour}:${minute} 확인`;
+}
+
+function countInStockSizes(item: TrackedListing) {
+  return Object.values(item.sizes).filter((value) => value === "in_stock").length;
+}
 
 function getStatusStyle(changeType: ReturnType<typeof getChangeType>) {
   switch (changeType) {
     case "price_drop":
       return {
-        backgroundColor: "#EEF6FF",
-        textColor: "#2563EB",
+        backgroundColor: COLORS.blueSoft,
+        textColor: COLORS.blue,
       };
     case "restocked":
       return {
-        backgroundColor: "#ECFDF3",
-        textColor: "#16A34A",
+        backgroundColor: COLORS.greenSoft,
+        textColor: COLORS.green,
       };
     case "sold_out":
       return {
-        backgroundColor: "#F5F5F5",
-        textColor: "#666666",
+        backgroundColor: COLORS.graySoft,
+        textColor: "#6B7280",
       };
     case "price_up":
       return {
-        backgroundColor: "#FFF1F2",
-        textColor: "#E11D48",
+        backgroundColor: COLORS.redSoft,
+        textColor: COLORS.red,
       };
     default:
       return {
-        backgroundColor: "#F5F5F5",
-        textColor: "#444444",
+        backgroundColor: COLORS.graySoft,
+        textColor: "#6B7280",
       };
   }
 }
 
-function getChangeDotColor(changeType: ReturnType<typeof getChangeType>) {
+function getChangeAccent(item: TrackedListing) {
+  const changeType = getChangeType(item);
+
   switch (changeType) {
     case "price_drop":
-      return "#2563EB";
-    case "restocked":
-      return "#16A34A";
+      return {
+        color: COLORS.blue,
+        bg: COLORS.blueSoft,
+        text: getChangeDisplay(item),
+      };
     case "price_up":
-      return "#E11D48";
+      return {
+        color: COLORS.red,
+        bg: COLORS.redSoft,
+        text: getChangeDisplay(item),
+      };
+    case "restocked":
+      return {
+        color: COLORS.green,
+        bg: COLORS.greenSoft,
+        text: "재입고 확인",
+      };
+    case "sold_out":
+      return {
+        color: "#6B7280",
+        bg: COLORS.graySoft,
+        text: "현재 품절",
+      };
     default:
-      return null;
+      return {
+        color: "#6B7280",
+        bg: COLORS.graySoft,
+        text: "변동 없음",
+      };
   }
 }
 
-function getColumnCount(width: number) {
-  if (Platform.OS !== "web") return 2;
-  if (width >= 1400) return 5;
-  if (width >= 1100) return 4;
-  if (width >= 800) return 3;
-  return 2;
+function getLowestPriceSite(compareItems: ComparePriceItem[] | undefined) {
+  if (!compareItems || compareItems.length === 0) return null;
+
+  const valid = compareItems.filter((siteItem) => siteItem.price != null);
+  if (valid.length === 0) return null;
+
+  return valid.reduce((min, cur) => {
+    if ((cur.price ?? Infinity) < (min.price ?? Infinity)) return cur;
+    return min;
+  });
+}
+
+function SummaryChip({
+  label,
+  value,
+}: {
+  label: string;
+  value: number;
+}) {
+  return (
+    <View
+      style={{
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 14,
+        backgroundColor: "#F8FAFC",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        marginRight: 8,
+        minWidth: 84,
+      }}
+    >
+      <Text style={{ fontSize: 11, color: COLORS.subText, marginBottom: 3 }}>
+        {label}
+      </Text>
+      <Text style={{ fontSize: 16, fontWeight: "800", color: COLORS.text }}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function ThumbnailPlaceholder() {
+  return (
+    <View
+      style={{
+        width: 64,
+        height: 64,
+        borderRadius: 12,
+        overflow: "hidden",
+        backgroundColor: "#F3F4F6",
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: "center",
+        justifyContent: "center",
+        marginRight: 12,
+        flexShrink: 0,
+      }}
+    >
+      <Text
+        style={{
+          fontSize: 10,
+          lineHeight: 13,
+          color: COLORS.muted,
+          fontWeight: "600",
+          textAlign: "center",
+        }}
+      >
+        이미지{"\n"}없음
+      </Text>
+    </View>
+  );
 }
 
 export default function TrackedProductsScreen({ navigation }: Props) {
@@ -84,17 +231,64 @@ export default function TrackedProductsScreen({ navigation }: Props) {
   const { width } = useWindowDimensions();
   const columnCount = getColumnCount(width);
 
-  const gap = Platform.OS === "web" ? 12 : 10;
-  const horizontalPadding = 28;
+  const pagePadding = 14;
+  const gap = 12;
   const totalGap = gap * (columnCount - 1);
-  const cardWidth = (width - horizontalPadding - totalGap) / columnCount;
+  const availableWidth = width - pagePadding * 2 - totalGap;
+  const rawCardWidth = availableWidth / columnCount;
+  const cardWidth = Platform.OS === "web" ? Math.min(420, rawCardWidth) : rawCardWidth;
+
+  const summary = useMemo(() => {
+    return {
+      total: items.length,
+      favorite: items.filter((item) => item.isPinned).length,
+      priceDrop: items.filter((item) => getChangeType(item) === "price_drop").length,
+      restocked: items.filter((item) => getChangeType(item) === "restocked").length,
+    };
+  }, [items]);
 
   const visibleItems = useMemo(() => {
-    const filtered = filterTrackedListings(items, filter, searchText);
+    const keyword = searchText.trim().toLowerCase();
+
+    const searched = items.filter((item) => {
+      if (!keyword) return true;
+
+      const compareItems = mockCompareMap[item.id] ?? [];
+      const lowestSite = getLowestPriceSite(compareItems);
+
+      const target = [
+        item.name ?? "",
+        item.brand ?? "",
+        lowestSite?.siteLabel ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return target.includes(keyword);
+    });
+
+    const filtered = searched.filter((item) => {
+      const changeType = getChangeType(item);
+
+      switch (filter) {
+        case "price_drop":
+          return changeType === "price_drop";
+        case "restocked":
+          return changeType === "restocked";
+        case "sold_out":
+          return changeType === "sold_out";
+        case "favorite":
+          return item.isPinned;
+        case "all":
+        default:
+          return true;
+      }
+    });
+
     return sortTrackedListings(filtered);
   }, [items, filter, searchText]);
 
-  function togglePin(id: string) {
+  function toggleFavorite(id: string) {
     setItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, isPinned: !item.isPinned } : item
@@ -102,7 +296,7 @@ export default function TrackedProductsScreen({ navigation }: Props) {
     );
   }
 
-  function renderFilterButton(value: FilterType, label: string) {
+  function renderFilterChip(value: FilterType, label: string) {
     const selected = filter === value;
 
     return (
@@ -110,20 +304,20 @@ export default function TrackedProductsScreen({ navigation }: Props) {
         key={value}
         onPress={() => setFilter(value)}
         style={{
-          paddingHorizontal: 12,
-          paddingVertical: 7,
+          paddingHorizontal: 14,
+          paddingVertical: 10,
           borderRadius: 999,
           borderWidth: 1,
-          borderColor: selected ? "#111" : "#E2E2E2",
-          backgroundColor: selected ? "#111" : "#FFF",
+          borderColor: selected ? COLORS.black : COLORS.border,
+          backgroundColor: selected ? COLORS.black : COLORS.surface,
           marginRight: 8,
         }}
       >
         <Text
           style={{
             fontSize: 12,
-            color: selected ? "#FFF" : "#333",
-            fontWeight: "600",
+            fontWeight: "700",
+            color: selected ? "#FFFFFF" : "#374151",
           }}
         >
           {label}
@@ -135,7 +329,10 @@ export default function TrackedProductsScreen({ navigation }: Props) {
   function renderCard(item: TrackedListing) {
     const changeType = getChangeType(item);
     const statusStyle = getStatusStyle(changeType);
-    const dotColor = getChangeDotColor(changeType);
+    const accent = getChangeAccent(item);
+    const inStockCount = countInStockSizes(item);
+    const compareItems = mockCompareMap[item.id] ?? [];
+    const lowestSite = getLowestPriceSite(compareItems);
 
     return (
       <Pressable
@@ -143,212 +340,358 @@ export default function TrackedProductsScreen({ navigation }: Props) {
         onPress={() => navigation.navigate("ProductDetail", { item })}
         style={{
           width: cardWidth,
+          minHeight: 138,
+          borderRadius: 18,
+          backgroundColor: COLORS.surface,
           borderWidth: 1,
-          borderColor: "#ECECEC",
-          borderRadius: 12,
-          padding: 8,
-          backgroundColor: "#FFF",
+          borderColor: COLORS.border,
+          padding: 12,
           marginBottom: gap,
-          position: "relative",
+          shadowColor: "#000",
+          shadowOpacity: Platform.OS === "web" ? 0.04 : 0.03,
+          shadowRadius: 10,
+          shadowOffset: { width: 0, height: 4 },
+          elevation: Platform.OS === "web" ? 0 : 1,
         }}
       >
-        <Pressable
-          onPress={() => togglePin(item.id)}
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            zIndex: 3,
-            width: 22,
-            height: 22,
-            borderRadius: 11,
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "#FFF",
-            borderWidth: 1,
-            borderColor: "#F0F0F0",
-          }}
-        >
-          <Text style={{ fontSize: 13 }}>{item.isPinned ? "★" : "☆"}</Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
+          <ThumbnailPlaceholder />
 
-        <View
-          style={{
-            width: "100%",
-            height: cardWidth * 0.65,
-            borderRadius: 8,
-            backgroundColor: "#F5F5F5",
-            borderWidth: 1,
-            borderColor: "#EAEAEA",
-            alignItems: "center",
-            justifyContent: "center",
-            marginBottom: 8,
-            position: "relative",
-            overflow: "hidden",
-          }}
-        >
-          {dotColor ? (
+          <View style={{ flex: 1, minWidth: 0 }}>
             <View
               style={{
-                position: "absolute",
-                top: 7,
-                left: 7,
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: dotColor,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 6,
               }}
-            />
-          ) : null}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  minWidth: 0,
+                  flex: 1,
+                }}
+              >
+                {item.brand ? (
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: "800",
+                      color: COLORS.text,
+                      marginRight: 8,
+                    }}
+                  >
+                    {item.brand}
+                  </Text>
+                ) : null}
 
-          <Text style={{ fontSize: 11, color: "#999" }}>이미지 없음</Text>
-        </View>
+                {lowestSite ? (
+                  <View
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 4,
+                      borderRadius: 999,
+                      backgroundColor: COLORS.purpleSoft,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 10,
+                        fontWeight: "800",
+                        color: COLORS.purple,
+                        letterSpacing: 0.1,
+                      }}
+                    >
+                      최저가 {lowestSite.siteLabel}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
 
-        <Text
-          numberOfLines={2}
-          style={{
-            fontSize: 12,
-            fontWeight: "600",
-            color: "#111",
-            lineHeight: 16,
-            minHeight: 32,
-            marginBottom: 6,
-            paddingRight: 22,
-          }}
-        >
-          {item.name ?? "이름 없음"}
-        </Text>
+              <Pressable
+                onPress={(event) => {
+                  event.stopPropagation?.();
+                  toggleFavorite(item.id);
+                }}
+                hitSlop={8}
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 15,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: item.isPinned ? COLORS.yellowSoft : "#F8FAFC",
+                  borderWidth: 1,
+                  borderColor: item.isPinned ? COLORS.yellowBorder : COLORS.border,
+                  marginLeft: 10,
+                  flexShrink: 0,
+                }}
+              >
+                <Text style={{ fontSize: 14 }}>{item.isPinned ? "★" : "☆"}</Text>
+              </Pressable>
+            </View>
 
-        <Text
-          style={{
-            fontSize: 15,
-            fontWeight: "700",
-            color: "#111",
-            marginBottom: 2,
-          }}
-        >
-          {formatPrice(item.currentPrice)}
-        </Text>
+            <Text
+              numberOfLines={2}
+              style={{
+                fontSize: 13,
+                lineHeight: 18,
+                fontWeight: "700",
+                color: COLORS.text,
+                marginBottom: 8,
+                minHeight: 36,
+              }}
+            >
+              {item.name ?? "이름 없음"}
+            </Text>
 
-        <Text
-          numberOfLines={1}
-          style={{
-            fontSize: 10,
-            color: "#666",
-            marginBottom: 6,
-            lineHeight: 13,
-          }}
-        >
-          {getChangeDisplay(item)}
-        </Text>
+            <View
+              style={{
+                flexDirection: width < 520 ? "column" : "row",
+                alignItems: width < 520 ? "flex-start" : "center",
+                justifyContent: "space-between",
+                marginBottom: 7,
+                gap: 6,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 19,
+                  fontWeight: "800",
+                  color: COLORS.text,
+                  letterSpacing: -0.3,
+                }}
+              >
+                {formatPrice(item.currentPrice)}
+              </Text>
 
-        <View
-          style={{
-            alignSelf: "flex-start",
-            paddingHorizontal: 7,
-            paddingVertical: 3,
-            borderRadius: 999,
-            backgroundColor: statusStyle.backgroundColor,
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 10,
-              color: statusStyle.textColor,
-              fontWeight: "600",
-            }}
-          >
-            {getChangeLabel(item)}
-          </Text>
+              <View
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 5,
+                  borderRadius: 999,
+                  backgroundColor: accent.bg,
+                  maxWidth: "100%",
+                }}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: "800",
+                    color: accent.color,
+                  }}
+                >
+                  {accent.text}
+                </Text>
+              </View>
+            </View>
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 7,
+              }}
+            >
+              <View
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 999,
+                  backgroundColor: statusStyle.backgroundColor,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: "800",
+                    color: statusStyle.textColor,
+                  }}
+                >
+                  {getChangeLabel(item)}
+                </Text>
+              </View>
+
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: COLORS.subText,
+                  fontWeight: "600",
+                }}
+              >
+                재고 {inStockCount}개
+              </Text>
+            </View>
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+            >
+              <Text
+                numberOfLines={1}
+                style={{
+                  flex: 1,
+                  fontSize: 11,
+                  color: COLORS.subText,
+                }}
+              >
+                {item.previousPrice != null
+                  ? `이전 ${formatPrice(item.previousPrice)}`
+                  : "이전 가격 없음"}
+              </Text>
+
+              <Text
+                numberOfLines={1}
+                style={{
+                  fontSize: 10,
+                  color: COLORS.muted,
+                }}
+              >
+                {formatCheckedAt(item.lastCheckedAt)}
+              </Text>
+            </View>
+          </View>
         </View>
       </Pressable>
     );
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "#FFF" }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView
         contentContainerStyle={{
-          paddingHorizontal: 14,
+          paddingHorizontal: pagePadding,
           paddingTop: 14,
-          paddingBottom: 24,
+          paddingBottom: 28,
         }}
       >
         <View
           style={{
-            marginBottom: 12,
-            flexDirection: "row",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
+            borderRadius: 20,
+            backgroundColor: COLORS.surface,
+            borderWidth: 1,
+            borderColor: COLORS.border,
+            padding: 16,
+            marginBottom: 14,
           }}
         >
-          <View style={{ flex: 1, paddingRight: 10 }}>
-            <Text style={{ fontSize: 22, fontWeight: "700", color: "#111" }}>
-              추적 상품
-            </Text>
-            <Text style={{ fontSize: 12, color: "#777", marginTop: 4 }}>
-              가격과 재고 변화를 빠르게 확인하세요
-            </Text>
-          </View>
-
-          <Pressable
-            onPress={() => navigation.navigate("AddProduct")}
+          <View
             style={{
-              paddingHorizontal: 12,
-              paddingVertical: 9,
-              borderRadius: 12,
-              backgroundColor: "#111",
+              flexDirection: width < 620 ? "column" : "row",
+              justifyContent: "space-between",
+              alignItems: width < 620 ? "stretch" : "center",
+              marginBottom: 14,
+              gap: 12,
             }}
           >
-            <Text style={{ color: "#FFF", fontWeight: "600", fontSize: 12 }}>
-              + 상품 추가
-            </Text>
-          </Pressable>
-        </View>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{
+                  fontSize: 24,
+                  fontWeight: "800",
+                  color: COLORS.text,
+                  letterSpacing: -0.3,
+                }}
+              >
+                추적 상품
+              </Text>
+              <Text
+                style={{
+                  fontSize: 13,
+                  color: COLORS.subText,
+                  marginTop: 5,
+                }}
+              >
+                가격 하락, 재입고, 즐겨찾기, 최저가 쇼핑몰을 빠르게 확인하세요
+              </Text>
+            </View>
 
-        <TextInput
-          value={searchText}
-          onChangeText={setSearchText}
-          placeholder="상품 검색"
-          style={{
-            borderWidth: 1,
-            borderColor: "#E2E2E2",
-            borderRadius: 12,
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-            fontSize: 14,
-            marginBottom: 10,
-          }}
-        />
+            <Pressable
+              onPress={() => navigation.navigate("AddProduct")}
+              style={{
+                backgroundColor: COLORS.black,
+                paddingHorizontal: 14,
+                paddingVertical: 11,
+                borderRadius: 12,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: "#FFFFFF", fontSize: 12, fontWeight: "700" }}>
+                + 상품 추가
+              </Text>
+            </Pressable>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ marginBottom: 12 }}
+            contentContainerStyle={{ paddingRight: 8 }}
+          >
+            <SummaryChip label="전체 추적" value={summary.total} />
+            <SummaryChip label="가격 하락" value={summary.priceDrop} />
+            <SummaryChip label="재입고" value={summary.restocked} />
+            <SummaryChip label="즐겨찾기" value={summary.favorite} />
+          </ScrollView>
+
+          <TextInput
+            value={searchText}
+            onChangeText={setSearchText}
+            placeholder="상품명, 브랜드, 최저가 쇼핑몰 검색"
+            placeholderTextColor="#9CA3AF"
+            style={{
+              backgroundColor: "#F8FAFC",
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              borderRadius: 14,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+              fontSize: 14,
+              color: COLORS.text,
+            }}
+          />
+        </View>
 
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          style={{ marginBottom: 12 }}
+          style={{ marginBottom: 14 }}
+          contentContainerStyle={{ paddingRight: 8 }}
         >
-          {renderFilterButton("all", "전체")}
-          {renderFilterButton("price_drop", "가격하락")}
-          {renderFilterButton("restocked", "재입고")}
-          {renderFilterButton("sold_out", "품절")}
+          {renderFilterChip("all", "전체")}
+          {renderFilterChip("price_drop", "가격 하락")}
+          {renderFilterChip("restocked", "재입고")}
+          {renderFilterChip("sold_out", "품절")}
+          {renderFilterChip("favorite", "즐겨찾기")}
         </ScrollView>
 
         {visibleItems.length === 0 ? (
           <View
             style={{
+              borderRadius: 18,
+              backgroundColor: COLORS.surface,
               borderWidth: 1,
-              borderColor: "#EEE",
-              borderRadius: 16,
-              padding: 24,
+              borderColor: COLORS.border,
+              padding: 28,
               alignItems: "center",
               justifyContent: "center",
-              backgroundColor: "#FAFAFA",
             }}
           >
             <Text
               style={{
-                fontSize: 16,
-                fontWeight: "600",
-                color: "#111",
+                fontSize: 17,
+                fontWeight: "700",
+                color: COLORS.text,
                 marginBottom: 8,
               }}
             >
@@ -358,25 +701,27 @@ export default function TrackedProductsScreen({ navigation }: Props) {
             <Text
               style={{
                 fontSize: 13,
-                color: "#777",
+                color: COLORS.subText,
                 textAlign: "center",
                 lineHeight: 20,
-                marginBottom: 14,
+                marginBottom: 16,
               }}
             >
-              검색어나 필터를 바꿔보거나 새로운 상품을 추가해보세요.
+              검색어나 필터를 바꾸거나
+              {"\n"}
+              새로운 상품을 추가해보세요.
             </Text>
 
             <Pressable
               onPress={() => navigation.navigate("AddProduct")}
               style={{
+                backgroundColor: COLORS.black,
                 paddingHorizontal: 14,
                 paddingVertical: 10,
                 borderRadius: 12,
-                backgroundColor: "#111",
               }}
             >
-              <Text style={{ color: "#FFF", fontWeight: "600" }}>
+              <Text style={{ color: "#FFFFFF", fontWeight: "700" }}>
                 상품 추가하기
               </Text>
             </Pressable>
@@ -386,7 +731,8 @@ export default function TrackedProductsScreen({ navigation }: Props) {
             style={{
               flexDirection: "row",
               flexWrap: "wrap",
-              gap: gap,
+              gap,
+              justifyContent: Platform.OS === "web" ? "flex-start" : undefined,
             }}
           >
             {visibleItems.map(renderCard)}
