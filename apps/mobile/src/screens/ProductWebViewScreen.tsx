@@ -2,15 +2,19 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import React, { useMemo, useState } from "react";
 import {
   Alert,
-  Button,
+  Linking,
   Platform,
+  Pressable,
   SafeAreaView,
   ScrollView,
   Text,
   View,
 } from "react-native";
 import { WebView } from "react-native-webview";
-import type { RootStackParamList } from "../../App";
+
+// 🌟 공통 테마 및 타입 임포트 (경로를 통합된 폴더로 맞춤)
+import { COLORS } from "../constants/theme";
+import type { RootStackParamList } from "../types/navigation";
 
 type Props = NativeStackScreenProps<RootStackParamList, "ProductWebView">;
 
@@ -24,9 +28,111 @@ type ExtractResult = {
   price_texts_sample: string[];
 };
 
-export default function ProductWebViewScreen({ route }: Props) {
+function formatPrice(value: number | null) {
+  if (value == null) return "가격 정보 없음";
+  return `${value.toLocaleString("ko-KR")}원`;
+}
+
+function getStatusMeta(status: ExtractResult["product_status"]) {
+  switch (status) {
+    case "on_sale":
+      return { label: "판매중", bg: COLORS.greenSoft, color: COLORS.green };
+    case "sold_out":
+      return { label: "품절", bg: COLORS.redSoft, color: COLORS.red };
+    case "ended":
+      return { label: "판매 종료", bg: COLORS.graySoft, color: COLORS.subText };
+    case "unknown":
+    default:
+      return { label: "상태 미확인", bg: COLORS.yellowSoft, color: COLORS.yellow };
+  }
+}
+
+function getConfidenceMeta(confidence: number) {
+  if (confidence >= 0.8) {
+    return { label: "신뢰도 높음", bg: COLORS.greenSoft, color: COLORS.green };
+  }
+  if (confidence >= 0.5) {
+    return { label: "신뢰도 보통", bg: COLORS.blueSoft, color: COLORS.blue };
+  }
+  return { label: "신뢰도 낮음", bg: COLORS.redSoft, color: COLORS.red };
+}
+
+function SectionCard({ children, style }: { children: React.ReactNode; style?: object }) {
+  return (
+    <View
+      style={[
+        {
+          backgroundColor: COLORS.surface,
+          borderWidth: 1,
+          borderColor: COLORS.border,
+          borderRadius: 18,
+          padding: 14,
+          marginBottom: 12,
+        },
+        style,
+      ]}
+    >
+      {children}
+    </View>
+  );
+}
+
+function MetricChip({ label, value }: { label: string; value: string }) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: "#FAFAFA",
+        borderWidth: 1,
+        borderColor: "#F0F0F0",
+        borderRadius: 12,
+        padding: 12,
+      }}
+    >
+      <Text style={{ fontSize: 11, color: COLORS.subText, marginBottom: 4 }}>
+        {label}
+      </Text>
+      <Text
+        numberOfLines={2}
+        style={{ fontSize: 14, fontWeight: "800", color: COLORS.text }}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function SizePill({ label, status }: { label: string; status: "in_stock" | "sold_out" | "unknown" }) {
+  const style =
+    status === "in_stock"
+      ? { bg: COLORS.greenSoft, color: COLORS.green }
+      : status === "sold_out"
+      ? { bg: COLORS.redSoft, color: COLORS.red }
+      : { bg: COLORS.graySoft, color: COLORS.subText };
+
+  return (
+    <View
+      style={{
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+        borderRadius: 999,
+        backgroundColor: style.bg,
+        marginRight: 8,
+        marginBottom: 8,
+      }}
+    >
+      <Text style={{ fontSize: 12, fontWeight: "700", color: style.color }}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+export default function ProductWebViewScreen({ route, navigation }: Props) {
   const { url } = route.params;
   const [extract, setExtract] = useState<ExtractResult | null>(null);
+  const [showRawJson, setShowRawJson] = useState(false);
+  const [webKey, setWebKey] = useState(0);
 
   const injected = useMemo(() => {
     return `
@@ -181,120 +287,489 @@ export default function ProductWebViewScreen({ route }: Props) {
           window.ReactNativeWebView.postMessage(JSON.stringify(payload));
         }
 
-        extract();
-
+        // 🌟 기능 개선: 최대 10초까지 대기하며 안정적으로 파싱하도록 수정
         let tries = 0;
-        const timer = setInterval(() => {
+        const maxTries = 10;
+        
+        function attemptExtract() {
           tries += 1;
-          extract();
-          if (tries >= 4) clearInterval(timer);
-        }, 1000);
+          const name = guessProductName();
+          const priceTexts = findPriceTexts();
+          
+          // 이름과 가격이 발견되었거나 10초가 지나면 무조건 추출 시도
+          if ((name && priceTexts.length > 0) || tries >= maxTries) {
+            extract();
+          } else {
+            setTimeout(attemptExtract, 1000);
+          }
+        }
+        
+        attemptExtract();
       })();
       true;
     `;
   }, []);
 
   const summary = useMemo(() => {
-    if (!extract) return "추출 대기중...";
-    const sizeCount = Object.keys(extract.sizes || {}).length;
-    return [
-      extract.name ? `name=${extract.name}` : "name=null",
-      `sale_price=${extract.sale_price ?? "null"}`,
-      `status=${extract.product_status}`,
-      `sizes=${sizeCount}`,
-      `conf=${extract.confidence.toFixed(2)}`,
-    ].join(" / ");
+    if (!extract) {
+      return {
+        title: "추출 대기중",
+        description: "상품 정보를 확인하는 중이에요.",
+      };
+    }
+
+    if (!extract.name && !extract.sale_price) {
+      return {
+        title: "확인 정보 부족",
+        description: "페이지는 열렸지만 상품명이나 가격을 충분히 찾지 못했어요.",
+      };
+    }
+
+    return {
+      title: "추출 완료",
+      description: "상품명, 가격, 상태 정보를 확인했어요.",
+    };
   }, [extract]);
+
+  const sizeEntries = useMemo(
+    () => Object.entries(extract?.sizes ?? {}),
+    [extract]
+  );
+
+  const statusMeta = extract ? getStatusMeta(extract.product_status) : null;
+  const confidenceMeta = extract ? getConfidenceMeta(extract.confidence) : null;
 
   if (Platform.OS === "web") {
     return (
-      <SafeAreaView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
         <View
           style={{
             flex: 1,
             justifyContent: "center",
             alignItems: "center",
             padding: 24,
-            gap: 12,
           }}
         >
-          <Text style={{ fontSize: 20, fontWeight: "600" }}>
-            웹에서는 상품 추출 테스트를 지원하지 않음
-          </Text>
-
-          <Text style={{ fontSize: 14, color: "#666", textAlign: "center" }}>
-            현재 이 화면은 react-native-webview 기반이라서
-            {"\n"}
-            Expo Go 또는 모바일 에뮬레이터에서 확인해야 해.
-          </Text>
-
-          <View
-            style={{
-              width: "100%",
-              padding: 16,
-              borderWidth: 1,
-              borderColor: "#ddd",
-              borderRadius: 12,
-              backgroundColor: "#fafafa",
-              marginTop: 8,
-            }}
-          >
-            <Text style={{ fontSize: 13, color: "#999", marginBottom: 8 }}>
-              등록한 URL
+          <SectionCard style={{ width: "100%", maxWidth: 560 }}>
+            <Text
+              style={{
+                fontSize: 22,
+                fontWeight: "800",
+                color: COLORS.text,
+                marginBottom: 8,
+                textAlign: "center",
+              }}
+            >
+              웹에서는 추출 테스트를 지원하지 않아요
             </Text>
-            <Text selectable style={{ fontSize: 14 }}>
-              {url}
-            </Text>
-          </View>
 
-          <Text style={{ fontSize: 13, color: "#999", textAlign: "center" }}>
-            웹에서는 UI 흐름만 확인하고,
-            {"\n"}
-            실제 추출 기능은 나중에 모바일에서 테스트하면 돼.
-          </Text>
+            <Text
+              style={{
+                fontSize: 14,
+                color: COLORS.subText,
+                textAlign: "center",
+                lineHeight: 22,
+                marginBottom: 16,
+              }}
+            >
+              이 화면은 react-native-webview 기반이라서
+              {"\n"}
+              모바일 기기 또는 에뮬레이터에서 확인해야 해요.
+            </Text>
+
+            <View
+              style={{
+                backgroundColor: "#F8FAFC",
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                borderRadius: 14,
+                padding: 14,
+                marginBottom: 16,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: COLORS.subText,
+                  fontWeight: "700",
+                  marginBottom: 6,
+                }}
+              >
+                등록한 URL
+              </Text>
+              <Text selectable style={{ fontSize: 13, color: COLORS.text }}>
+                {url}
+              </Text>
+            </View>
+
+            <Pressable
+              onPress={() => navigation.goBack()}
+              style={{
+                backgroundColor: COLORS.black,
+                borderRadius: 14,
+                paddingVertical: 14,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}>
+                이전 화면으로
+              </Text>
+            </Pressable>
+          </SectionCard>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={{ flex: 1 }}>
-      <View style={{ paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8, gap: 8 }}>
-        <Text numberOfLines={1} style={{ fontSize: 12, color: "#666" }}>
-          {url}
-        </Text>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      <View
+        style={{
+          paddingHorizontal: 16,
+          paddingTop: 12,
+          paddingBottom: 10,
+          backgroundColor: COLORS.bg,
+        }}
+      >
+        <SectionCard style={{ marginBottom: 0 }}>
+          <Text
+            style={{
+              fontSize: 20,
+              fontWeight: "800",
+              color: COLORS.text,
+              marginBottom: 6,
+            }}
+          >
+            상품 정보 확인
+          </Text>
 
-        <Text style={{ fontSize: 12 }}>{summary}</Text>
+          <Text
+            style={{
+              fontSize: 13,
+              color: COLORS.subText,
+              lineHeight: 20,
+              marginBottom: 12,
+            }}
+          >
+            상품 페이지를 불러와 추적에 필요한 정보를 확인하고 있어요.
+          </Text>
 
-        <Button
-          title="추출 결과 보기"
-          onPress={() => {
-            if (!extract) {
-              Alert.alert("아직", "추출 결과가 아직 없어.");
-              return;
-            }
-            Alert.alert("Extract", JSON.stringify(extract, null, 2).slice(0, 2000));
+          <View
+            style={{
+              backgroundColor: "#F8FAFC",
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              borderRadius: 14,
+              padding: 12,
+              marginBottom: 12,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 11,
+                color: COLORS.subText,
+                fontWeight: "700",
+                marginBottom: 6,
+              }}
+            >
+              현재 링크
+            </Text>
+            <Text numberOfLines={2} style={{ fontSize: 12, color: COLORS.text }}>
+              {url}
+            </Text>
+          </View>
+
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: extract ? "#D9F0E1" : "#ECEFF3",
+              backgroundColor: extract ? COLORS.greenSoft : COLORS.graySoft,
+              borderRadius: 14,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 12,
+                fontWeight: "700",
+                color: extract ? COLORS.green : COLORS.subText,
+                marginBottom: 3,
+              }}
+            >
+              {summary.title}
+            </Text>
+            <Text
+              style={{
+                fontSize: 12,
+                color: extract ? COLORS.green : COLORS.subText,
+              }}
+            >
+              {summary.description}
+            </Text>
+          </View>
+        </SectionCard>
+      </View>
+
+      <View style={{ flex: 1 }}>
+        <WebView
+          key={webKey}
+          source={{ uri: url }}
+          injectedJavaScript={injected}
+          onMessage={(e) => {
+            try {
+              const msg = JSON.parse(e.nativeEvent.data) as ExtractResult;
+              if (msg.type === "EXTRACT_RESULT") {
+                setExtract(msg);
+              }
+            } catch {}
           }}
         />
       </View>
 
-      <WebView
-        source={{ uri: url }}
-        injectedJavaScript={injected}
-        onMessage={(e) => {
-          try {
-            const msg = JSON.parse(e.nativeEvent.data) as ExtractResult;
-            if (msg.type === "EXTRACT_RESULT") {
-              setExtract(msg);
-            }
-          } catch {}
+      <ScrollView
+        style={{
+          maxHeight: 320,
+          borderTopWidth: 1,
+          borderTopColor: COLORS.border,
+          backgroundColor: COLORS.bg,
         }}
-      />
+        contentContainerStyle={{ padding: 16, paddingBottom: 20 }}
+      >
+        <SectionCard>
+          <Text
+            style={{
+              fontSize: 16,
+              fontWeight: "800",
+              color: COLORS.text,
+              marginBottom: 12,
+            }}
+          >
+            추출 결과 요약
+          </Text>
 
-      <ScrollView style={{ maxHeight: 160, borderTopWidth: 1, borderColor: "#eee" }}>
-        <Text style={{ padding: 12, fontSize: 12, color: "#333" }}>
-          {extract ? JSON.stringify(extract, null, 2) : "추출 대기중..."}
-        </Text>
+          <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+            <MetricChip
+              label="상품명"
+              value={extract?.name ?? "확인 전"}
+            />
+            <MetricChip
+              label="판매가"
+              value={formatPrice(extract?.sale_price ?? null)}
+            />
+          </View>
+
+          <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+            <MetricChip
+              label="상태"
+              value={statusMeta?.label ?? "확인 전"}
+            />
+            <MetricChip
+              label="신뢰도"
+              value={confidenceMeta?.label ?? "확인 전"}
+            />
+          </View>
+
+          {extract ? (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 12 }}>
+              <View
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 999,
+                  backgroundColor: statusMeta?.bg ?? COLORS.graySoft,
+                  marginRight: 8,
+                  marginBottom: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 11,
+                    fontWeight: "800",
+                    color: statusMeta?.color ?? COLORS.subText,
+                  }}
+                >
+                  {statusMeta?.label}
+                </Text>
+              </View>
+
+              <View
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 999,
+                  backgroundColor: confidenceMeta?.bg ?? COLORS.graySoft,
+                  marginRight: 8,
+                  marginBottom: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 11,
+                    fontWeight: "800",
+                    color: confidenceMeta?.color ?? COLORS.subText,
+                  }}
+                >
+                  신뢰도 {extract.confidence.toFixed(2)}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          {sizeEntries.length > 0 ? (
+            <>
+              <Text
+                style={{
+                  fontSize: 13,
+                  fontWeight: "700",
+                  color: COLORS.text,
+                  marginBottom: 8,
+                }}
+              >
+                감지된 사이즈
+              </Text>
+
+              <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 12 }}>
+                {sizeEntries.map(([label, status]) => (
+                  <SizePill key={label} label={`${label} · ${status === "in_stock" ? "재고 있음" : status === "sold_out" ? "품절" : "미확인"}`} status={status} />
+                ))}
+              </View>
+            </>
+          ) : (
+            <View
+              style={{
+                borderRadius: 12,
+                backgroundColor: "#FAFAFA",
+                borderWidth: 1,
+                borderColor: "#F0F0F0",
+                padding: 12,
+                marginBottom: 12,
+              }}
+            >
+              <Text style={{ fontSize: 12, color: COLORS.subText, lineHeight: 18 }}>
+                아직 감지된 사이즈 정보가 없어요.
+              </Text>
+            </View>
+          )}
+
+          <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+            <Pressable
+              onPress={() => setWebKey((prev) => prev + 1)}
+              style={{
+                flex: 1,
+                backgroundColor: "#F3F4F6",
+                borderRadius: 12,
+                paddingVertical: 12,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: "700", color: COLORS.text }}>
+                다시 불러오기
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={async () => {
+                try {
+                  await Linking.openURL(url);
+                } catch {
+                  Alert.alert("오류", "링크를 열 수 없어요.");
+                }
+              }}
+              style={{
+                flex: 1,
+                backgroundColor: COLORS.black,
+                borderRadius: 12,
+                paddingVertical: 12,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: "700", color: "#FFFFFF" }}>
+                원본 링크 열기
+              </Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => {
+              if (!extract) {
+                Alert.alert("아직 추출 전", "상품 정보를 조금 더 기다려주세요.");
+                return;
+              }
+
+              Alert.alert(
+                "추출 결과 확인",
+                `상품명: ${extract.name ?? "없음"}\n판매가: ${formatPrice(
+                  extract.sale_price
+                )}\n상태: ${statusMeta?.label ?? "미확인"}`
+              );
+            }}
+            style={{
+              backgroundColor: extract ? COLORS.blue : "#D1D5DB",
+              borderRadius: 12,
+              paddingVertical: 13,
+              alignItems: "center",
+            }}
+          >
+            <Text style={{ fontSize: 14, fontWeight: "700", color: "#FFFFFF" }}>
+              추출 결과 확인
+            </Text>
+          </Pressable>
+        </SectionCard>
+
+        <SectionCard>
+          <Pressable
+            onPress={() => setShowRawJson((prev) => !prev)}
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: showRawJson ? 10 : 0,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 15,
+                fontWeight: "800",
+                color: COLORS.text,
+              }}
+            >
+              원시 추출 데이터
+            </Text>
+
+            <Text
+              style={{
+                fontSize: 12,
+                fontWeight: "700",
+                color: COLORS.subText,
+              }}
+            >
+              {showRawJson ? "접기" : "펼치기"}
+            </Text>
+          </Pressable>
+
+          {showRawJson ? (
+            <View
+              style={{
+                borderRadius: 12,
+                backgroundColor: "#FAFAFA",
+                borderWidth: 1,
+                borderColor: "#F0F0F0",
+                padding: 12,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: COLORS.text,
+                  lineHeight: 18,
+                }}
+              >
+                {extract ? JSON.stringify(extract, null, 2) : "추출 대기중..."}
+              </Text>
+            </View>
+          ) : null}
+        </SectionCard>
       </ScrollView>
     </SafeAreaView>
   );
