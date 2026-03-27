@@ -1,26 +1,14 @@
-import type { TrackedListing } from "./trackedListing";
-
-export type AddedOffer = {
-  mall: "musinsa" | "kream" | "official" | "29cm";
-  mallLabel: string;
-  price: number;
-  url: string;
-};
-
-// 기존 TrackedListing에 사이즈와 브랜드, 오퍼를 통합
-export type TrackedItemWithOffers = TrackedListing & {
-  brand?: string | null;
-  targetSize?: string; // 🌟 새로 추가된 추적할 타겟 사이즈
-  offers?: AddedOffer[];
-};
+// apps/mobile/src/types/navigation.ts
+import { MasterProduct } from './product';
 
 export type RootStackParamList = {
-  TrackedProducts: undefined;
-  AddProduct: undefined;
+  MainTabs: undefined;
   ProductDetail: {
-    item: TrackedItemWithOffers; // any 제거됨!
+    product: MasterProduct;
   };
-  ProductWebView: {
-    url: string;
-  };
+};
+
+export type TabParamList = {
+  SearchTab: undefined;
+  ClosetTab: undefined;
 };
